@@ -1,0 +1,71 @@
+export const API_KEY = 'AIzaSyC8o7aoZ3xtpMqOaJrzXhHVPDxfqM-PeHw';
+export const BASE_URL = 'https://www.googleapis.com/youtube/v3';
+
+export const COLORS = {
+    primary: '#ff0000',
+    secondary: '#282828',
+    white: '#ffffff',
+    black: '#0f0f0f',
+    gray: '#AAAAAA',
+    lightGray: '#F1F1F1',
+    darkGray: '#606060',
+    overlay: 'rgba(0,0,0,0.5)',
+};
+
+export const MOCK_VIDEOS = [
+    {
+        id: '1',
+        title: 'Building a YouTube Clone in React Native',
+        thumbnail: 'https://img.youtube.com/vi/yL_9kU1uC4I/maxresdefault.jpg',
+        channel: 'Code Masters',
+        channelAvatar: 'https://ui-avatars.com/api/?name=Code+Masters&background=random',
+        views: '1.2M',
+        time: '2 days ago',
+        duration: '10:05',
+        url: 'https://www.youtube.com/watch?v=yL_9kU1uC4I',
+    },
+    {
+        id: '2',
+        title: 'Top 10 Programming Languages for 2024',
+        thumbnail: 'https://img.youtube.com/vi/SfKbQoD7cRw/maxresdefault.jpg',
+        channel: 'Tech Trends',
+        channelAvatar: 'https://ui-avatars.com/api/?name=Tech+Trends&background=random',
+        views: '850K',
+        time: '1 week ago',
+        duration: '15:30',
+        url: 'https://www.youtube.com/watch?v=SfKbQoD7cRw',
+    },
+    {
+        id: '3',
+        title: 'React Native Crash Course for Beginners',
+        thumbnail: 'https://img.youtube.com/vi/gvkqT_Uoahw/maxresdefault.jpg',
+        channel: 'Dev Ed',
+        channelAvatar: 'https://ui-avatars.com/api/?name=Dev+Ed&background=random',
+        views: '2.5M',
+        time: '3 months ago',
+        duration: '45:20',
+        url: 'https://www.youtube.com/watch?v=gvkqT_Uoahw',
+    },
+    {
+        id: '4',
+        title: 'Learn JavaScript in 1 Hour',
+        thumbnail: 'https://img.youtube.com/vi/W6NZfCO5SIk/maxresdefault.jpg',
+        channel: 'Programming with Mosh',
+        channelAvatar: 'https://ui-avatars.com/api/?name=Mosh&background=random',
+        views: '5M',
+        time: '1 year ago',
+        duration: '1:00:00',
+        url: 'https://www.youtube.com/watch?v=W6NZfCO5SIk',
+    },
+    {
+        id: '5',
+        title: 'CSS Grid vs Flexbox - Which one to use?',
+        thumbnail: 'https://img.youtube.com/vi/hs3piaN4b5I/maxresdefault.jpg',
+        channel: 'Kevin Powell',
+        channelAvatar: 'https://ui-avatars.com/api/?name=Kevin+Powell&background=random',
+        views: '300K',
+        time: '5 days ago',
+        duration: '12:45',
+        url: 'https://www.youtube.com/watch?v=hs3piaN4b5I',
+    },
+];
