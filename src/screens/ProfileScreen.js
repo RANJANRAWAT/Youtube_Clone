@@ -1,6 +1,7 @@
-import React from 'react';
-import { View, Text, StyleSheet, Image, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, StyleSheet, Image, ScrollView, TouchableOpacity, Alert } from 'react-native';
 import { COLORS } from '../utils/constants';
+import { getHistory, clearHistory } from '../utils/storage';
 
 const MENU_ITEMS = [
     { icon: '🎬', label: 'Your videos' },
@@ -11,30 +12,78 @@ const MENU_ITEMS = [
 ];
 
 const ProfileScreen = () => {
+    const [history, setHistory] = useState([]);
+
+    const [avatarError, setAvatarError] = useState(false);
+
+    useEffect(() => {
+        loadHistory();
+    }, []);
+
+    const loadHistory = async () => {
+        const data = await getHistory();
+        setHistory(data);
+    };
+
+    const handleClearHistory = async () => {
+        Alert.alert(
+            "Clear History",
+            "Are you sure you want to clear your watch history?",
+            [
+                { text: "Cancel", style: "cancel" },
+                {
+                    text: "Clear", onPress: async () => {
+                        await clearHistory();
+                        setHistory([]);
+                    }
+                }
+            ]
+        );
+    };
     return (
         <ScrollView style={styles.container}>
             <View style={styles.header}>
                 <Image
-                    source={{ uri: 'https://ui-avatars.com/api/?name=User&background=random' }}
+                    source={{
+                        uri: avatarError
+                            ? 'https://via.placeholder.com/150'
+                            : 'https://ui-avatars.com/api/?name=User&background=random&color=fff&size=128'
+                    }}
                     style={styles.avatar}
+                    onError={() => setAvatarError(true)}
                 />
                 <View style={styles.userInfo}>
-                    <Text style={styles.name}>John Doe</Text>
-                    <Text style={styles.handle}>@johndoe • View Channel</Text>
+                    <Text style={styles.name}>Ranjan Rawat</Text>
+                    <Text style={styles.handle}>@ranjanrawat • View Channel</Text>
                 </View>
             </View>
 
             <View style={styles.historySection}>
-                <Text style={styles.sectionTitle}>History</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.historyList}>
-                    {[1, 2, 3, 4, 5].map(i => (
-                        <View key={i} style={styles.historyCard}>
-                            <View style={styles.historyThumbnail} />
-                            <Text style={styles.historyVideoTitle} numberOfLines={2}>Watched Video with a long title {i}</Text>
-                            <Text style={styles.historyChannelName}>Channel Name</Text>
-                        </View>
-                    ))}
-                </ScrollView>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>History</Text>
+                    {history.length > 0 && (
+                        <TouchableOpacity onPress={handleClearHistory}>
+                            <Text style={{ color: COLORS.primary, fontWeight: 'bold' }}>Clear All</Text>
+                        </TouchableOpacity>
+                    )}
+                </View>
+                {history.length === 0 ? (
+                    <Text style={{ color: COLORS.darkGray, fontStyle: 'italic' }}>No watch history yet</Text>
+                ) : (
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.historyList}>
+                        {history.map((item, index) => (
+                            <View key={item.id || index} style={styles.historyCard}>
+                                <Image
+                                    source={{ uri: item.thumbnail || `https://img.youtube.com/vi/${item.id}/hqdefault.jpg` }}
+                                    style={styles.historyThumbnail}
+                                    resizeMode="cover"
+                                />
+                                <Text style={styles.historyVideoTitle} numberOfLines={2}>{item.title}</Text>
+                                <Text style={styles.historyChannelName}>{item.channel}</Text>
+                            </View>
+                        ))}
+                    </ScrollView>
+                )}
             </View>
 
             <View style={styles.menuContainer}>

@@ -1,16 +1,22 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Dimensions, ScrollView, TouchableOpacity, Image, Linking, ActivityIndicator, AppState } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, ScrollView, TouchableOpacity, Image, Linking, ActivityIndicator, AppState, PermissionsAndroid, Platform, Alert } from 'react-native';
+import ReactNativeBlobUtil from 'react-native-blob-util';
 import { WebView } from 'react-native-webview';
 import Video from 'react-native-video';
 import TrackPlayer from 'react-native-track-player';
 import { COLORS } from '../utils/constants';
-import { getVideoStatus } from '../services/youtubeApi';
+import { getVideoStatus, fetchRelatedVideos } from '../services/youtubeApi';
+import { formatDuration } from '../utils/formatters';
+import VideoCard from '../components/VideoCard';
 
-const VideoScreen = ({ videoParam }) => {
+import { addToHistory } from '../utils/storage';
+import { fetchStreamUrl } from '../services/videoExtractor';
+
+const VideoScreen = ({ videoParam, onVideoSelect }) => {
 
 
     const video = videoParam || {
-        id: 'dQw4w9WgXcQ', 
+        id: 'dQw4w9WgXcQ',
         title: "Video Title",
         views: "0 views",
         time: "Just now",
@@ -19,6 +25,8 @@ const VideoScreen = ({ videoParam }) => {
         channelAvatar: ""
     };
 
+
+    console.log(video, "jjjjjjjjjjjjjjjjj")
     const getVideoIdFromUrl = (v) => {
         if (v.url) {
             const m = v.url.match(/[?&]v=([^&]+)/) || v.url.match(/youtu\.be\/([^?&]+)/) || v.url.match(/embed\/([^?&]+)/);
@@ -28,6 +36,26 @@ const VideoScreen = ({ videoParam }) => {
     };
 
     const videoId = getVideoIdFromUrl(video);
+    const [relatedVideos, setRelatedVideos] = useState([]);
+
+    useEffect(() => {
+        let mounted = true;
+        (async () => {
+            if (videoId) {
+                // Save to history (safely)
+                try {
+                    await addToHistory({ ...video, id: videoId, date: Date.now() });
+                } catch (e) {
+                    console.warn('Failed to save history in VideoScreen', e);
+                }
+
+                // Pass the full video object to allow filtering by title/category
+                const related = await fetchRelatedVideos(video);
+                if (mounted) setRelatedVideos(related);
+            }
+        })();
+        return () => { mounted = false; };
+    }, [videoId, video]); // Add video to deps so it updates if title changes
 
     // origin used to set iframe origin and WebView baseUrl so requests include a Referer
     // Replace with your app domain if you have one (e.g. 'https://myapp.example')
@@ -207,124 +235,84 @@ const VideoScreen = ({ videoParam }) => {
         return () => clearTimeout(t);
     }, [playbackFailed, playAttempts]);
 
-    // Open video in YouTube app when the app backgrounds while the video is playing
+    // AppState listener to keep video playing in background
     useEffect(() => {
         const handleAppStateChange = (nextAppState) => {
-            console.warn('AppState changed to', nextAppState);
-            if ((nextAppState === 'background' || nextAppState === 'inactive') && !embedError && isValidVideoId) {
-                // If this video is a self-hosted file, try handing off to TrackPlayer instead of opening YouTube
-                if (video.fileUrl) {
-                    const playingLocally = isLocalPlaying;
-                    if (playingLocally && !openedOnBackgroundRef.current) {
-                        openedOnBackgroundRef.current = true;
-                        const pos = playerCurrentTimeRef.current || 0;
-                        // Attempt a handoff (non-blocking)
-                        handoffToTrackPlayer(pos);
-
-                        // Fallback: if TrackPlayer hasn't started playback within ~2.5s, resume WebView fallback or notify user
-                        if (backgroundFallbackTimeoutRef.current) { clearTimeout(backgroundFallbackTimeoutRef.current); }
-                        backgroundFallbackTimeoutRef.current = setTimeout(async () => {
-                            try {
-                                const state = await TrackPlayer.getState();
-                                // TrackPlayer states: 0-4 depending on lib; if not playing, open fallback / notify
-                                const isPlaying = state === (TrackPlayer.STATE_PLAYING || 3);
-                                if (!isPlaying) {
-                                    console.warn('TrackPlayer did not start — consider opening externally');
-                                    // open externally as a last resort
-                                    const url = video.fileUrl;
-                                    Linking.openURL(url).catch(e => console.warn('Linking failed', e));
-                                }
-                            } catch (e) { console.warn('TrackPlayer state check failed', e); }
-                            backgroundFallbackTimeoutRef.current = null;
-                        }, 2500);
-                    }
-                    return; // local handled; do not execute webview fallback below
+            if (nextAppState === 'background' || nextAppState === 'inactive') {
+                if (video.fileUrl && isLocalPlaying && !openedOnBackgroundRef.current) {
+                    openedOnBackgroundRef.current = true;
+                    // Handoff local video to TrackPlayer for better background support
+                    const pos = playerCurrentTimeRef.current || 0;
+                    handoffToTrackPlayer(pos);
+                    return;
                 }
 
-                const playing = currentPlayerStateRef.current === 1;
-                if (playing && !openedOnBackgroundRef.current) {
-                    openedOnBackgroundRef.current = true;
+                if (!video.fileUrl && !embedError && isValidVideoId) {
+                    // Use TrackPlayer to hold the foreground service for YouTube playback
+                    // This creates a notification and keeps the app alive
+                    (async () => {
+                        try {
+                            await TrackPlayer.reset();
+                            await TrackPlayer.add({
+                                id: 'silent-keep-alive',
+                                // A clearer silent audio file
+                                url: 'https://raw.githubusercontent.com/anars/blank-audio/master/15-seconds-of-silence.mp3',
+                                title: video.title || 'Background Playback',
+                                artist: video.channel || 'YouTube',
+                                artwork: video.thumbnail || undefined,
+                                duration: 15 // seconds
+                            });
+                            await TrackPlayer.setRepeatMode(TrackPlayer.REPEAT_TRACK);
+                            await TrackPlayer.play();
+                            console.warn('Started TrackPlayer silent keep-alive');
+                        } catch (e) { console.warn('Silent keep-alive failed', e); }
+                    })();
+                }
 
-                    // First try: request an immediate accurate time sample from the iframe and open YouTube quickly with that timestamp
-                    const prevAt = playerCurrentTimeReportedAtRef.current || 0;
-                    try {
-                        if (webviewRef && webviewRef.current) {
-                            webviewRef.current.injectJavaScript(`(function(){ try{ var t = (player && player.getCurrentTime && player.getCurrentTime()) || 0; window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify({type:'current_time', currentTime: t})); } catch(e){} })(); true;`);
-                            console.warn('Requested immediate currentTime from iframe prior to background open');
-                        }
-                    } catch (e) { console.warn('request current time failed', e); }
+                // For YouTube WebView: start aggressive keep-alive injection
+                if (webviewRef && webviewRef.current) {
+                    // Immediate injection
+                    webviewRef.current.injectJavaScript(`(function(){ try{ player.playVideo(); } catch(e){} })(); true;`);
+                    console.warn('Injected initial background play command');
 
-                    // Wait a short window (350ms) to see if we got a current_time back; then open YouTube at that spot immediately
-                    setTimeout(() => {
-                        const lastCt = playerCurrentTimeRef.current;
-                        const lastAt = playerCurrentTimeReportedAtRef.current || prevAt;
-                        let startSec = 0;
-                        if (typeof lastCt === 'number' && lastAt) {
-                            const estimated = lastCt + ((Date.now() - lastAt) / 1000);
-                            startSec = Math.max(0, Math.round(estimated));
-                        }
-                        let url;
-                        if (video.url) {
-                            url = startSec ? `${video.url}${video.url.includes('?') ? '&' : '?'}t=${startSec}s` : video.url;
-                        } else {
-                            url = `https://www.youtube.com/watch?v=${videoId}${startSec ? `&t=${startSec}s` : ''}`;
-                        }
-                        console.warn('Immediate fallback: opening on YouTube at', startSec, 'sec:', url);
-                        Linking.openURL(url).catch(e => console.warn('Linking failed', e));
-                    }, 350);
-
-                    // Also continue best-effort injection attempts (in case the platform allows background play despite opening fallback)
-                    try {
-                        if (webviewRef && webviewRef.current) {
-                            webviewRef.current.injectJavaScript(`(function(){ try{ player.unMute && player.unMute(); player.playVideo && player.playVideo(); } catch(e){} })(); true;`);
-                            console.warn('Injected initial background play/unmute command');
-                        }
-                    } catch (e) { console.warn('inject on background failed', e); }
-
-                    try {
-                        if (backgroundInjectionIntervalRef.current) {
-                            clearInterval(backgroundInjectionIntervalRef.current);
-                            backgroundInjectionIntervalRef.current = null;
-                        }
-                        backgroundInjectionAttemptsRef.current = 0;
-                        backgroundInjectionIntervalRef.current = setInterval(() => {
-                            try {
-                                if (webviewRef && webviewRef.current) {
-                                    webviewRef.current.injectJavaScript(`(function(){ try{ player.unMute && player.unMute(); player.playVideo && player.playVideo(); } catch(e){} })(); true;`);
-                                    backgroundInjectionAttemptsRef.current += 1;
-                                    console.warn('Background inject attempt', backgroundInjectionAttemptsRef.current);
-                                }
-                            } catch (e) { console.warn('background inject attempt failed', e); }
-                            if ((backgroundInjectionAttemptsRef.current || 0) >= 7) {
-                                if (backgroundInjectionIntervalRef.current) { clearInterval(backgroundInjectionIntervalRef.current); backgroundInjectionIntervalRef.current = null; }
-                                backgroundInjectionAttemptsRef.current = 0;
+                    // Start interval to repeatedly force play/unmute to counteract system pausing
+                    if (backgroundInjectionIntervalRef.current) {
+                        clearInterval(backgroundInjectionIntervalRef.current);
+                    }
+                    backgroundInjectionAttemptsRef.current = 0;
+                    backgroundInjectionIntervalRef.current = setInterval(() => {
+                        try {
+                            if (webviewRef && webviewRef.current) {
+                                webviewRef.current.injectJavaScript(`(function(){ try{ player.playVideo(); } catch(e){} })(); true;`);
+                                backgroundInjectionAttemptsRef.current += 1;
+                                console.warn('Background keep-alive attempt', backgroundInjectionAttemptsRef.current);
                             }
-                        }, 300);
-                    } catch (e) { console.warn('failed to start background injection interval', e); }
+                        } catch (e) { console.warn('background interval failed', e); }
 
-                    // Start a slightly longer timeout: if we don't receive a fresh heartbeat/currentTime update shortly after backgrounding,
-                    // assume playback was stopped by the system and fall back (already opened immediate fallback above but keep this as a safety net)
-                    if (backgroundFallbackTimeoutRef.current) { clearTimeout(backgroundFallbackTimeoutRef.current); }
-                    backgroundFallbackTimeoutRef.current = setTimeout(() => {
-                        const lastAt = playerCurrentTimeReportedAtRef.current || 0;
-                        const stale = (Date.now() - lastAt) > 4000; // >4s since last reported position
-                        const haveRecentTime = (typeof playerCurrentTimeRef.current === 'number') && !stale;
-                        if (!haveRecentTime) {
-                            console.warn('Background play could not be maintained — already opened immediate fallback earlier');
-                        } else {
-                            console.warn('Background play appears to be continuing (recent heartbeat found) — not falling back.');
+                        // Keep trying for a significant time (e.g., 30s) or until foregrounded
+                        // Standard Android background restrictions might kill it eventually without a foreground service,
+                        // but this loop maximizes the chance of staying alive.
+                        if (backgroundInjectionAttemptsRef.current > 30) {
+                            // slow down after initial burst but keep going
                         }
-                        backgroundFallbackTimeoutRef.current = null;
-                    }, 4000);
+                    }, 1000);
                 }
             } else if (nextAppState === 'active') {
-                // allow future background attempts and clean up any pending fallback work
                 openedOnBackgroundRef.current = false;
-                if (backgroundFallbackTimeoutRef.current) {
-                    clearTimeout(backgroundFallbackTimeoutRef.current);
-                    backgroundFallbackTimeoutRef.current = null;
+
+                // Stop the silent keep-alive track if it was playing for YouTube
+                if (!video.fileUrl) {
+                    (async () => {
+                        try { await TrackPlayer.stop(); } catch (e) { }
+                    })();
                 }
-                // If we handed off to TrackPlayer while backgrounded for a local file, resume in-app playback
+
+                if (backgroundInjectionIntervalRef.current) {
+                    clearInterval(backgroundInjectionIntervalRef.current);
+                    backgroundInjectionIntervalRef.current = null;
+                }
+
+                // If we used TrackPlayer for background, resume local video
                 if (video.fileUrl && handingOffRef.current) {
                     resumeFromTrackPlayer();
                 }
@@ -333,10 +321,13 @@ const VideoScreen = ({ videoParam }) => {
 
         const subscription = AppState.addEventListener('change', handleAppStateChange);
         return () => {
-            if (backgroundFallbackTimeoutRef.current) { clearTimeout(backgroundFallbackTimeoutRef.current); backgroundFallbackTimeoutRef.current = null; }
             subscription.remove();
+            if (backgroundInjectionIntervalRef.current) {
+                clearInterval(backgroundInjectionIntervalRef.current);
+                backgroundInjectionIntervalRef.current = null;
+            }
         };
-    }, [embedError, isValidVideoId, videoId, video]);
+    }, [video, isLocalPlaying]);
 
     const YT_ERROR_MAP = {
         2: 'Invalid parameter.',
@@ -370,6 +361,117 @@ const VideoScreen = ({ videoParam }) => {
         return 'Video not available for embedding';
     };
 
+    const requestStoragePermission = async () => {
+        if (Platform.OS !== 'android') return true;
+
+        // On Android 13 (API 33) and above, WRITE_EXTERNAL_STORAGE is not needed/deprecated
+        // for DownloadManager or public Downloads directory access.
+        if (Platform.Version >= 33) return true;
+
+        try {
+            const granted = await PermissionsAndroid.request(
+                PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+                {
+                    title: 'Storage Permission',
+                    message: 'App needs access to memory to download files',
+                    buttonNeutral: 'Ask Me Later',
+                    buttonNegative: 'Cancel',
+                    buttonPositive: 'OK',
+                },
+            );
+            return granted === PermissionsAndroid.RESULTS.GRANTED;
+        } catch (err) {
+            console.warn(err);
+            return false;
+        }
+    };
+
+
+
+    const downloadVideo = async () => {
+        try {
+            console.log('Starting download process...');
+
+            // Safety check for module
+            if (!ReactNativeBlobUtil || !ReactNativeBlobUtil.fs) {
+                console.error('ReactNativeBlobUtil not initialized');
+                Alert.alert("Error", "Download module not initialized");
+                return;
+            }
+
+            let downloadUrl = video.fileUrl;
+
+            // If no direct fileUrl (YouTube), attempt to extract one
+            if (!downloadUrl) {
+                const videoLink = video.url || `https://www.youtube.com/watch?v=${videoId}`;
+                if (isValidVideoId) {
+                    Alert.alert("Please Wait", "Preparing video download... This might take a moment.");
+                    try {
+                        const extractedUrl = await fetchStreamUrl(videoLink);
+                        if (extractedUrl) {
+                            downloadUrl = extractedUrl;
+                        } else {
+                            Alert.alert("Download Failed", "Could not extract video stream. Please try again later.");
+                            return;
+                        }
+                    } catch (err) {
+                        console.error('Extraction error:', err);
+                        Alert.alert("Error", "Failed to prepare download.");
+                        return;
+                    }
+                } else {
+                    Alert.alert("Download Unavailable", "Invalid video ID.");
+                    return;
+                }
+            }
+
+            console.log('Final Download URL:', downloadUrl);
+
+            const hasPermission = await requestStoragePermission();
+            if (!hasPermission) {
+                console.warn('Storage permission denied');
+                Alert.alert("Permission Denied", "Storage permission is required to download videos.");
+                return;
+            }
+
+            const { dirs } = ReactNativeBlobUtil.fs;
+            const safeTitle = (video.title || 'video').replace(/[^a-z0-9]/gi, '_').toLowerCase();
+            // Use mp4 extension for video
+            const fileName = `${safeTitle}_${Date.now()}.mp4`;
+            // Save to standard Download directory so it's visible in gallery/files
+            const path = `${dirs.DownloadDir}/${fileName}`;
+            console.log('Download path:', path);
+
+            // Notify start
+            // Alert.alert("Download Started", `Downloading "${video.title}"...`);
+
+            ReactNativeBlobUtil.config({
+                fileCache: true,
+                addAndroidDownloads: {
+                    useDownloadManager: true,
+                    notification: true,
+                    path: path,
+                    description: 'Downloading video',
+                    title: video.title || fileName,
+                    mime: 'video/mp4',
+                    mediaScannable: true,
+                },
+            })
+                .fetch('GET', downloadUrl)
+                .then((res) => {
+                    console.log('Download success:', res.path());
+                    Alert.alert("Download Complete", `"${video.title}" has been saved to your Downloads folder.`);
+                })
+                .catch((err) => {
+                    console.error('Download fetch error:', err);
+                    Alert.alert("Download Failed", `Error: ${err.message || 'Unknown error'}`);
+                });
+        } catch (e) {
+            console.error('Download crash:', e);
+            Alert.alert("Error", `Download failed to start: ${e.message}`);
+        }
+    };
+
     return (
         <View style={styles.container}>
             <View style={styles.videoPlayer}>
@@ -384,6 +486,8 @@ const VideoScreen = ({ videoParam }) => {
                             muted={false}
                             volume={1.0}
                             paused={!isLocalPlaying}
+                            playInBackground={true}
+                            ignoreSilentSwitch="ignore"
                             onLoadStart={() => { setLoadingEmbed(true); setEmbedError(false); }}
                             onLoad={() => { setLoadingEmbed(false); setEmbedError(false); }}
                             onProgress={(p) => {
@@ -406,7 +510,7 @@ const VideoScreen = ({ videoParam }) => {
                                 <TouchableOpacity style={styles.playButton} onPress={async () => {
                                     try {
                                         // stop any TrackPlayer instance and play in-app
-                                        try { await TrackPlayer.stop(); await TrackPlayer.reset(); } catch (e) {}
+                                        try { await TrackPlayer.stop(); await TrackPlayer.reset(); } catch (e) { }
                                         setIsLocalPlaying(true);
                                         setPlaybackFailed(null);
                                     } catch (e) { console.warn('local play failed', e); }
@@ -430,12 +534,12 @@ const VideoScreen = ({ videoParam }) => {
                         )}
 
                         {playbackFailed && (
-                            <View style={[styles.unavailableOverlay, {justifyContent:'flex-start', paddingTop:40}]} pointerEvents="box-none">
+                            <View style={[styles.unavailableOverlay, { justifyContent: 'flex-start', paddingTop: 40 }]} pointerEvents="box-none">
                                 <View style={styles.unavailableBox}>
                                     <Text style={styles.unavailableText}>{playbackFailed}</Text>
-                                    <Text style={{color:'#fff', fontSize:12, marginBottom:8}}>Local playback failed — try again or open externally</Text>
-                                    <View style={{flexDirection:'row'}}>
-                                        <TouchableOpacity style={[styles.openButton, {marginRight:10}]} onPress={() => {
+                                    <Text style={{ color: '#fff', fontSize: 12, marginBottom: 8 }}>Local playback failed — try again or open externally</Text>
+                                    <View style={{ flexDirection: 'row' }}>
+                                        <TouchableOpacity style={[styles.openButton, { marginRight: 10 }]} onPress={() => {
                                             // try to play again
                                             try {
                                                 setIsLocalPlaying(true);
@@ -445,7 +549,7 @@ const VideoScreen = ({ videoParam }) => {
                                             <Text style={styles.openButtonText}>Try again</Text>
                                         </TouchableOpacity>
 
-                                        <TouchableOpacity style={[styles.openButton, {backgroundColor:'#333'}]} onPress={() => Linking.openURL(video.fileUrl)}>
+                                        <TouchableOpacity style={[styles.openButton, { backgroundColor: '#333' }]} onPress={() => Linking.openURL(video.fileUrl)}>
                                             <Text style={styles.openButtonText}>Open externally</Text>
                                         </TouchableOpacity>
                                     </View>
@@ -464,7 +568,16 @@ const VideoScreen = ({ videoParam }) => {
                             allowsInlineMediaPlayback={true}
                             originWhitelist={['*']}
                             mixedContentMode="always"
+                            userAgent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/77.0.3865.90 Safari/537.36"
                             source={{ html: embedHtml, baseUrl: ORIGIN }}
+                            injectedJavaScript={`
+                                Object.defineProperty(document, 'hidden', { get: function() { return false; } });
+                                Object.defineProperty(document, 'webkitHidden', { get: function() { return false; } });
+                                Object.defineProperty(document, 'visibilityState', { get: function() { return 'visible'; } });
+                                Object.defineProperty(document, 'webkitVisibilityState', { get: function() { return 'visible'; } });
+                                window.dispatchEvent(new Event('visibilitychange'));
+                                true;
+                            `}
                             scrollEnabled={true}
                             scalesPageToFit={true}
                             allowsFullscreenVideo={true}
@@ -665,12 +778,12 @@ const VideoScreen = ({ videoParam }) => {
                             </View>
                         )}
                         {playbackFailed && (
-                            <View style={[styles.unavailableOverlay, {justifyContent:'flex-start', paddingTop:40}]} pointerEvents="box-none">
+                            <View style={[styles.unavailableOverlay, { justifyContent: 'flex-start', paddingTop: 40 }]} pointerEvents="box-none">
                                 <View style={styles.unavailableBox}>
                                     <Text style={styles.unavailableText}>{playbackFailed}</Text>
-                                    <Text style={{color:'#fff', fontSize:12, marginBottom:8}}>Playback ruk gaya — fir se koshish karein ya YouTube par kholen</Text>
-                                    <View style={{flexDirection:'row'}}>
-                                        <TouchableOpacity style={[styles.openButton, {marginRight:10}]} onPress={() => {
+                                    <Text style={{ color: '#fff', fontSize: 12, marginBottom: 8 }}>Playback ruk gaya — fir se koshish karein ya YouTube par kholen</Text>
+                                    <View style={{ flexDirection: 'row' }}>
+                                        <TouchableOpacity style={[styles.openButton, { marginRight: 10 }]} onPress={() => {
                                             // try to play again
                                             try {
                                                 if (webviewRef && webviewRef.current) {
@@ -683,7 +796,7 @@ const VideoScreen = ({ videoParam }) => {
                                             <Text style={styles.openButtonText}>Try again</Text>
                                         </TouchableOpacity>
 
-                                        <TouchableOpacity style={[styles.openButton, {backgroundColor:'#333'}]} onPress={() => Linking.openURL(video.url || `https://www.youtube.com/watch?v=${videoId}`)}>
+                                        <TouchableOpacity style={[styles.openButton, { backgroundColor: '#333' }]} onPress={() => Linking.openURL(video.url || `https://www.youtube.com/watch?v=${videoId}`)}>
                                             <Text style={styles.openButtonText}>Open on YouTube</Text>
                                         </TouchableOpacity>
                                     </View>
@@ -693,19 +806,19 @@ const VideoScreen = ({ videoParam }) => {
 
                     </>
                 ) : (
-                    <View style={{flex:1, alignItems:'center', justifyContent:'center', backgroundColor:'black'}}>
+                    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: 'black' }}>
                         {checkingStatus ? (
                             <>
                                 <ActivityIndicator size="large" color="#fff" />
-                                <Text style={{color:'#fff', marginTop:10}}>Checking video availability...</Text>
+                                <Text style={{ color: '#fff', marginTop: 10 }}>Checking video availability...</Text>
                             </>
                         ) : (
                             <>
-                                <Image source={{ uri: video.thumbnail || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` }} style={{width:'100%', height:'100%'}} resizeMode="cover" />
-                                <View style={{position:'absolute', alignItems:'center'}}>
-                                    <Text style={{color:'white', fontWeight:'bold', marginBottom:8}}>Video not available for embedding</Text>
+                                <Image source={{ uri: video.thumbnail || `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                                <View style={{ position: 'absolute', alignItems: 'center' }}>
+                                    <Text style={{ color: 'white', fontWeight: 'bold', marginBottom: 8 }}>Video not available for embedding</Text>
                                     {isValidVideoId && (
-                                        <TouchableOpacity style={[styles.openButton, {marginTop:12}]} onPress={() => Linking.openURL(video.url || `https://www.youtube.com/watch?v=${videoId}`)}>
+                                        <TouchableOpacity style={[styles.openButton, { marginTop: 12 }]} onPress={() => Linking.openURL(video.url || `https://www.youtube.com/watch?v=${videoId}`)}>
                                             <Text style={styles.openButtonText}>Open on YouTube</Text>
                                         </TouchableOpacity>
                                     )}
@@ -732,7 +845,7 @@ const VideoScreen = ({ videoParam }) => {
 
             <ScrollView style={styles.content}>
                 <Text style={styles.title}>{video.title}</Text>
-                <Text style={styles.stats}>{video.views} • {video.time}</Text>
+                <Text style={styles.stats}>{video.views} • {formatDuration(video.time)}</Text>
 
                 <View style={styles.actionsContainer}>
                     <View style={styles.actionItem}>
@@ -747,10 +860,10 @@ const VideoScreen = ({ videoParam }) => {
                         <Text style={styles.actionIcon}>share</Text>
                         <Text style={styles.actionText}>Share</Text>
                     </View>
-                    <View style={styles.actionItem}>
+                    <TouchableOpacity style={styles.actionItem} onPress={downloadVideo}>
                         <Text style={styles.actionIcon}>⬇️</Text>
                         <Text style={styles.actionText}>Download</Text>
-                    </View>
+                    </TouchableOpacity>
                     <View style={styles.actionItem}>
                         <Text style={styles.actionIcon}>save</Text>
                         <Text style={styles.actionText}>Save</Text>
@@ -779,6 +892,18 @@ const VideoScreen = ({ videoParam }) => {
                 </View>
 
                 <Text style={styles.description} numberOfLines={3}>{video.description}</Text>
+
+                <View style={styles.relatedContainer}>
+                    <Text style={styles.relatedHeader}>Related Videos</Text>
+                    {relatedVideos.map((item) => (
+                        <TouchableOpacity key={item.id} onPress={() => {
+                            if (onVideoSelect) onVideoSelect(item);
+                        }}>
+                            <VideoCard video={item} />
+                        </TouchableOpacity>
+                    ))}
+                    {relatedVideos.length === 0 && <ActivityIndicator size="small" color="red" />}
+                </View>
 
             </ScrollView>
         </View>
@@ -833,9 +958,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
-        paddingVertical: 10,
-        borderBottomWidth: 1,
-        borderBottomColor: COLORS.lightGray,
+        marginBottom: 15,
     },
     channelInfo: {
         flexDirection: 'row',
@@ -845,12 +968,12 @@ const styles = StyleSheet.create({
         width: 40,
         height: 40,
         borderRadius: 20,
-        backgroundColor: COLORS.gray,
         marginRight: 10,
+        backgroundColor: '#eee',
     },
     channelName: {
-        fontSize: 16,
         fontWeight: 'bold',
+        fontSize: 14,
         color: COLORS.black,
     },
     subscriberCount: {
@@ -860,18 +983,18 @@ const styles = StyleSheet.create({
     subscribeText: {
         color: 'red',
         fontWeight: 'bold',
-        fontSize: 16,
+        fontSize: 14,
     },
     commentsSection: {
-        paddingVertical: 15,
-        borderBottomWidth: 1,
-        borderBottomColor: COLORS.lightGray,
+        marginVertical: 10,
+        padding: 10,
+        backgroundColor: '#f9f9f9',
+        borderRadius: 8,
     },
     commentsHeader: {
-        fontSize: 14,
         fontWeight: 'bold',
-        color: COLORS.black,
-        marginBottom: 10,
+        fontSize: 14,
+        marginBottom: 5,
     },
     commentPreview: {
         flexDirection: 'row',
@@ -881,18 +1004,30 @@ const styles = StyleSheet.create({
         width: 24,
         height: 24,
         borderRadius: 12,
-        backgroundColor: COLORS.gray,
+        backgroundColor: COLORS.purple, // Using a constant color instead of random
         marginRight: 10,
     },
     commentText: {
         fontSize: 12,
-        color: COLORS.black,
-        flex: 1,
+        color: COLORS.darkGray,
     },
     description: {
         fontSize: 14,
-        color: COLORS.darkGray,
+        color: COLORS.black,
         marginTop: 10,
+        lineHeight: 20,
+    },
+    relatedContainer: {
+        marginTop: 20,
+        borderTopWidth: 1,
+        borderTopColor: '#eee',
+        paddingTop: 15,
+    },
+    relatedHeader: {
+        fontSize: 16,
+        fontWeight: 'bold',
+        marginBottom: 10,
+        color: COLORS.black,
     },
     loadingOverlay: {
         ...StyleSheet.absoluteFillObject,
