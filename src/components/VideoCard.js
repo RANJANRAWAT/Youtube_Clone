@@ -1,14 +1,16 @@
 import React from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, Dimensions } from 'react-native';
 import { COLORS } from '../utils/constants';
+import { formatDuration, formatTimeAgo } from '../utils/formatters';
 
 const VideoCard = ({ video }) => {
+    if (!video) return null;
     return (
         <View style={styles.container}>
             <View style={styles.thumbnailContainer}>
                 <Image source={{ uri: video.thumbnail }} style={styles.thumbnail} />
                 <View style={styles.durationContainer}>
-                    <Text style={styles.durationText}>{video.duration}</Text>
+                    <Text style={styles.durationText}>{formatDuration(video.duration)}</Text>
                 </View>
             </View>
 
@@ -17,7 +19,7 @@ const VideoCard = ({ video }) => {
                 <View style={styles.textContainer}>
                     <Text style={styles.title} numberOfLines={2}>{video.title}</Text>
                     <Text style={styles.subtitle}>
-                        {video.channel} • {video.views} • {video.time}
+                        {video.channel} • {video.views} • {video.time && (video.time.startsWith('20') ? formatTimeAgo(video.time) : video.time)}
                     </Text>
                 </View>
                 <TouchableOpacity style={styles.moreIcon}>

@@ -6,9 +6,11 @@ const Header = ({ onSearchPress }) => {
     return (
         <View style={styles.container}>
             <View style={styles.logoContainer}>
-                <View style={styles.logoIcon}>
-                    <View style={styles.playButton} />
-                </View>
+                <Image
+                    source={{ uri: 'https://upload.wikimedia.org/wikipedia/commons/4/42/YouTube_icon_%282013-2017%29.png' }}
+                    style={styles.logoImage}
+                    resizeMode="contain"
+                />
                 <Text style={styles.logoText}>YouTube</Text>
             </View>
             <View style={styles.iconsContainer}>
@@ -21,9 +23,9 @@ const Header = ({ onSearchPress }) => {
                 <TouchableOpacity style={styles.iconButton} onPress={onSearchPress}>
                     <Text style={styles.iconText}>🔍</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.profileButton}>
+                {/* <TouchableOpacity style={styles.profileButton}>
                     <Text style={styles.profileText}>👤</Text>
-                </TouchableOpacity>
+                </TouchableOpacity> */}
             </View>
         </View>
     );

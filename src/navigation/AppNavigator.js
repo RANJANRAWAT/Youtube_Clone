@@ -4,6 +4,7 @@ import HomeScreen from '../screens/HomeScreen';
 import SearchScreen from '../screens/SearchScreen';
 import ProfileScreen from '../screens/ProfileScreen';
 import VideoScreen from '../screens/VideoScreen';
+import ShortsScreen from '../screens/ShortsScreen';
 import { COLORS } from '../utils/constants';
 
 const AppNavigator = () => {
@@ -22,9 +23,9 @@ const AppNavigator = () => {
             case 'Search':
                 return <SearchScreen onCloseSearch={() => setActiveTab('Home')} onVideoSelect={onVideoSelect} />;
             case 'Video':
-                return <VideoScreen videoParam={selectedVideo} />;
+                return <VideoScreen videoParam={selectedVideo} onVideoSelect={onVideoSelect} />;
             case 'Shorts':
-                return <View style={styles.center}><Text>Shorts Placeholder</Text></View>;
+                return <ShortsScreen />;
             case 'Create':
                 return <View style={styles.center}><Text>Create Placeholder</Text></View>;
             case 'Subscriptions':
